@@ -293,7 +293,21 @@ static void reduction_out_mps(const Tensor& input_t,
 
       MPSGraphTensor* outputTensor = castOutputTensor;
       if (getMPSDataType(output_t) != [castOutputTensor dataType]) {
-        outputTensor = castMPSTensor(mpsGraph, castOutputTensor, output_t.scalar_type());
+        // When casting from a floating-point intermediate to a narrow integer output,
+        // Apple's castTensor:toType: performs saturated (clamping) conversion. CPU/CUDA
+        // instead truncate (keep least-significant bits, i.e. wrapping behavior).
+        // Work around this by casting float -> int32 first (truncates correctly),
+        // then int32 -> narrow int (wraps). See also Copy.mm for the same pattern.
+        auto outDType = getMPSDataType(output_t);
+        bool intermediateIsFloat = ([castOutputTensor dataType] & MPSDataTypeFloatBit) != 0;
+        bool outputIsNarrowInt = (outDType == MPSDataTypeUInt8 || outDType == MPSDataTypeInt8 ||
+                                  outDType == MPSDataTypeInt16 || outDType == MPSDataTypeUInt16);
+        if (intermediateIsFloat && outputIsNarrowInt) {
+          outputTensor = castMPSTensor(mpsGraph, castOutputTensor, MPSDataTypeInt32);
+          outputTensor = castMPSTensor(mpsGraph, outputTensor, outDType);
+        } else {
+          outputTensor = castMPSTensor(mpsGraph, castOutputTensor, output_t.scalar_type());
+        }
       }
 
       newCachedGraph->inputTensor_ = inputTensor;
